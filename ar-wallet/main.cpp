@@ -24,6 +24,9 @@
 #include <crypto/bip39.h>
 #include <crypto/jwk.h>
 #include <crypto/pem.h>
+#include <protocol/GetPrice.h>
+#include <protocol/GetTxAnchor.h>
+#include <protocol/Transaction.h>
 #include <wallet.h>
 
 namespace {
@@ -53,6 +56,7 @@ void printUsage(const char *prog) {
             << "Commands:\n"
             << "  balance         print the wallet balance (AR)\n"
             << "  address         print the wallet address\n"
+            << "  send            send AR tokens to another wallet\n"
             << "  create-pem      create a new wallet and save it as PEM "
                "(--out <path>)\n"
             << "  create-jwk      create a new wallet and save it as JWK "
@@ -88,6 +92,15 @@ void printCommandUsage(const char *prog, const std::string &command) {
   } else if (command == "address") {
     std::cerr << "Usage: " << prog << " address [global options]\n"
               << "Prints the wallet address.\n";
+  } else if (command == "send") {
+    std::cerr << "Usage: " << prog
+              << " send --target <address> --quantity <amount> [global "
+                 "options]\n"
+              << "Sends AR tokens to another wallet address.\n"
+              << "  --target <address>  recipient wallet address\n"
+              << "  --quantity <amount> amount to send in AR (e.g. 1.5)\n"
+              << "  --unit <unit>       optional unit: AR (default) or "
+                 "winston\n";
   } else if (command == "create-pem") {
     std::cerr << "Usage: " << prog << " create-pem --out <path> [--force]\n"
               << "Creates a new wallet and saves it as a PEM file.\n"
@@ -161,6 +174,12 @@ artools::wallet::WalletInstance_t loadWallet(char **argv, int argc, int start) {
         throw std::runtime_error("--pem requires a file path");
       artools::crypto::PEM pem(argv[++i]);
       wallet = artools::wallet::create(pem);
+    } else if (opt == "--target" || opt == "--quantity" || opt == "--unit") {
+      // Command-specific options of `send`; skip them and their value here.
+      // They are parsed by cmdSend.
+      if (i + 1 >= argc)
+        throw std::runtime_error(opt + " requires a value");
+      ++i;
     } else {
       throw std::runtime_error("unknown global option '" + opt + "'");
     }
@@ -188,6 +207,91 @@ int cmdBalance(const artools::wallet::WalletInstance_t &wallet) {
  */
 int cmdAddress(const artools::wallet::WalletInstance_t &wallet) {
   std::cout << wallet->getWalletAddress() << std::endl;
+  return 0;
+}
+
+/**
+ * @brief Sends AR tokens to another wallet address.
+ *
+ * Parses --target and --quantity, fetches the current transaction anchor and
+ * price from the network, builds a signed v2 token-transfer transaction and
+ * submits it to the network.
+ *
+ * @param wallet the sending wallet
+ * @param argv   the argument vector
+ * @param argc   the number of arguments
+ * @param start  index of the first option
+ * @return       0 on success, non-zero on failure
+ */
+int cmdSend(const artools::wallet::WalletInstance_t &wallet, char **argv,
+            int argc, int start) {
+  std::string target;
+  std::string quantityStr;
+  std::string unit = "AR";
+
+  for (int i = start; i < argc; ++i) {
+    std::string opt = argv[i];
+    if (opt == "--target") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--target requires an address");
+      target = argv[++i];
+    } else if (opt == "--quantity") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--quantity requires an amount");
+      quantityStr = argv[++i];
+    } else if (opt == "--unit") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--unit requires a value");
+      unit = argv[++i];
+    } else if (opt == "--mnemonic" || opt == "--jwk" || opt == "--pem") {
+      // Global wallet-source options; skip them and their value here. They
+      // are handled by loadWallet.
+      if (opt == "--mnemonic") {
+        // --mnemonic may be given without a value (interactive prompt).
+        if (i + 1 < argc && argv[i + 1][0] != '-')
+          ++i;
+      } else {
+        if (i + 1 >= argc)
+          throw std::runtime_error(opt + " requires a file path");
+        ++i;
+      }
+    } else {
+      throw std::runtime_error("unknown option '" + opt + "'");
+    }
+  }
+
+  if (target.empty())
+    throw std::runtime_error("--target is required");
+  if (quantityStr.empty())
+    throw std::runtime_error("--quantity is required");
+
+  // Convert the amount to Winston.
+  std::uint64_t quantityWinston = 0;
+  if (unit == "winston") {
+    quantityWinston = std::stoull(quantityStr);
+  } else if (unit == "AR") {
+    double ar = std::stod(quantityStr);
+    if (ar < 0)
+      throw std::runtime_error("--quantity must not be negative");
+    quantityWinston = static_cast<std::uint64_t>(
+        ar * static_cast<double>(artools::protocol::Transaction::kWinstonPerAR));
+  } else {
+    throw std::runtime_error("--unit must be 'AR' or 'winston'");
+  }
+
+  // Fetch the replay-protection anchor and the transaction fee.
+  artools::protocol::GetTxAnchor anchor;
+  artools::protocol::GetPrice price(0, target);
+
+  // Build and submit the signed transaction.
+  artools::protocol::Transaction tx(*wallet, target, quantityWinston,
+                                    price.getPrice(), anchor.getAnchor());
+  if (!tx.submit())
+    throw std::runtime_error("Transaction submission failed");
+
+  std::cout << "sent " << quantityWinston << " winston to " << target
+            << std::endl;
+  std::cout << "transaction id: " << tx.getId() << std::endl;
   return 0;
 }
 
@@ -400,7 +504,7 @@ int main(int argc, char **argv) {
     if (command == "jwk-to-pem")
       return cmdJwkToPem(argv, argc, 2);
 
-    if (command != "balance" && command != "address") {
+    if (command != "balance" && command != "address" && command != "send") {
       std::cerr << "Error: unknown command '" << command << "'\n";
       printUsage(argv[0]);
       return 1;
@@ -412,6 +516,8 @@ int main(int argc, char **argv) {
 
     if (command == "balance")
       return cmdBalance(wallet);
+    if (command == "send")
+      return cmdSend(wallet, argv, argc, 2);
     return cmdAddress(wallet);
 
   } catch (const std::exception &e) {

@@ -18,8 +18,8 @@ js-human-crypto-keys).
   prime sweep), rather than through OpenSSL's own key generation.
 - **Wallet formats**: PEM (PKCS#8/PKCS#1) and JWK (RFC 7517) are supported and
   mutually convertible.
-- **Network access**: TLS client for requests to Arweave gateways (e.g.
-  balance queries).
+- **Network access**: TLS client for requests to Arweave gateways (balance
+  queries, transaction anchors, transaction prices, token transfers).
 
 ## Project Structure
 
@@ -37,10 +37,14 @@ ar-tools/
 │   │   │   ├── base64url.h     # Base64url encoding (RFC 7515)
 │   │   │   ├── bip39.h         # BIP-39 mnemonics + deterministic RSA derivation
 │   │   │   ├── jwk.h           # JWK import/export
-│   │   │   ├── pem.h           # PEM import/export, signing/verification
-│   │   │   └── sha256.h        # SHA-256 hashing
+│   │   │   ├── pem.h           # PEM import/export, RSA-PSS signing/verification
+│   │   │   ├── sha256.h        # SHA-256 hashing
+│   │   │   └── sha384.h        # SHA-384 hashing
 │   │   ├── protocol/
-│   │   │   └── GetBalance.h    # Balance query via the Arweave gateway
+│   │   │   ├── GetBalance.h    # Balance query via the Arweave gateway
+│   │   │   ├── GetPrice.h      # Transaction price (fee) query
+│   │   │   ├── GetTxAnchor.h   # Transaction anchor query
+│   │   │   └── Transaction.h   # Signed v2 token-transfer transaction
 │   │   ├── transport/
 │   │   │   └── TLSClient.h     # TLS client (OpenSSL)
 │   │   ├── types.h             # Shared type definitions
@@ -52,6 +56,8 @@ ar-tools/
     ├── BIP39_tests.cpp
     ├── PEM_tests.cpp
     ├── SHA256_tests.cpp
+    ├── SHA384_tests.cpp
+    ├── Transaction_tests.cpp
     ├── WalletRecovery_tests.cpp
     └── main.cpp
 ```
@@ -104,6 +110,7 @@ ar-wallet <command> [global options]
 |---|---|
 | `balance` | Prints the wallet balance in AR (floating point) |
 | `address` | Prints the wallet address |
+| `send --target <addr> --quantity <amt> [--unit <unit>]` | Sends AR tokens to another wallet |
 | `create-pem --out <path> [--force]` | Creates a new wallet and saves it as PEM |
 | `create-jwk --out <path> [--force]` | Creates a new wallet and saves it as JWK |
 | `create-mnemonic` | Creates a new wallet and prints mnemonic + address |
@@ -147,6 +154,15 @@ ar-wallet balance
 # Query the balance of a wallet from a JWK file
 ar-wallet balance --jwk wallet.json
 
+# Send 1.5 AR to another wallet (default wallet)
+ar-wallet send --target <address> --quantity 1.5
+
+# Send 1000000000000 Winston to another wallet
+ar-wallet send --target <address> --quantity 1000000000000 --unit winston
+
+# Send AR using a specific wallet source
+ar-wallet send --target <address> --quantity 0.5 --pem wallet.pem
+
 # Load a wallet from a mnemonic (interactive input)
 ar-wallet address --mnemonic
 
@@ -156,6 +172,37 @@ ar-wallet pem-to-jwk --pem wallet.pem --out wallet.json
 # Convert JWK to PEM (overwrite an existing file)
 ar-wallet jwk-to-pem --jwk wallet.json --out wallet.pem --force
 ```
+
+### Sending Tokens (`send`)
+
+The `send` command transfers AR tokens to another wallet address. It performs
+the following steps automatically:
+
+1. Fetches the current transaction anchor (`GET /tx_anchor`) for replay
+   protection.
+2. Fetches the current transaction fee (`GET /price/0/<target>`) for a pure
+   token transfer with no data.
+3. Builds a signed **v2** token-transfer transaction and submits it to the
+   network (`POST /tx`).
+
+The transaction is signed per the Arweave specification: a merkle root
+(`deepHash`) of the SHA-384 hashes of the transaction fields is computed and
+signed with **RSA-PSS using SHA-256** (fixed 32-byte salt). The transaction
+`id` is the SHA-256 hash of the signature.
+
+```
+ar-wallet send --target <address> --quantity <amount> [--unit <unit>]
+```
+
+| Option | Description |
+|---|---|
+| `--target <address>` | Recipient wallet address (required) |
+| `--quantity <amount>` | Amount to send (required) |
+| `--unit <unit>` | `AR` (default) or `winston` |
+
+> **Note**: `send` makes live network requests and submits a real transaction.
+> It requires the wallet to hold sufficient balance to cover the amount plus
+> the transaction fee.
 
 ### Security Notes
 

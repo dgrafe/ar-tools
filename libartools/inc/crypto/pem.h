@@ -40,6 +40,9 @@ class PEM {
 public:
   static constexpr auto PUB_EXP = "010001";
   static const auto MODULUS_BITS = 4096;
+  // RSA-PSS salt length in bytes. Arweave uses a fixed 32-byte salt (matching
+  // the SHA-256 digest length), which makes signatures deterministic.
+  static const auto PSS_SALT_LENGTH = 32;
   using PrivateKeyContext_t = std::shared_ptr<EVP_PKEY_CTX>;
   using PrivateKey_t = std::shared_ptr<EVP_PKEY>;
   using BinaryContainer_t = artools::types::BinaryContainer_t;

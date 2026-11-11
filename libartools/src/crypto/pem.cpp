@@ -479,6 +479,10 @@ bool PEM::sign(const BinaryContainer_t &msg, std::string &sig) const {
     throw std::runtime_error(
         std::string("EVP_PKEVP_PKEY_CTX_set_signature_mdEY_sign_init: ") +
         ERR_error_string(ERR_get_error(), nullptr));
+  if (EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx.get(), PEM::PSS_SALT_LENGTH) <= 0)
+    throw std::runtime_error(
+        std::string("EVP_PKEY_CTX_set_rsa_pss_saltlen: ") +
+        ERR_error_string(ERR_get_error(), nullptr));
 
   size_t outlen = 0;
   if (EVP_PKEY_sign(ctx.get(), nullptr, &outlen, md.data(), md.size()) <= 0)
@@ -527,6 +531,10 @@ bool PEM::verify(const BinaryContainer_t &msg, const std::string &sig) const {
     throw std::runtime_error(
         std::string(
             "EVP_PKEY_CTXEVP_PKEY_CTX_set_signature_md_set_rsa_padding: ") +
+        ERR_error_string(ERR_get_error(), nullptr));
+  if (EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx.get(), PEM::PSS_SALT_LENGTH) <= 0)
+    throw std::runtime_error(
+        std::string("EVP_PKEY_CTX_set_rsa_pss_saltlen: ") +
         ERR_error_string(ERR_get_error(), nullptr));
 
   auto ret = EVP_PKEY_verify(ctx.get(), _sig.data(), _sig.size(), md.data(),

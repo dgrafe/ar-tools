@@ -17,7 +17,14 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
+// Directory of the test binary, used by tests to locate fixture files.
+std::string g_testBinDir;
+
 int main(int argc, char **argv) {
+  if (argc > 0 && argv[0])
+    g_testBinDir = argv[0];
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
