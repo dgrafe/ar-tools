@@ -34,13 +34,21 @@ constexpr char kHeaderSep[] = "\r\n\r\n";
 /**
  * @brief Parses the Content-Length header value from an HTTP response.
  *
+ * HTTP header names are case-insensitive; the server may send
+ * "content-length" (lowercase, as in HTTP/2) instead of "Content-Length".
+ * The header is located case-insensitively.
+ *
  * @param response the raw HTTP response bytes
  * @return         the body length in bytes, or -1 if the header is absent
  */
 long parseContentLength(const TLSClient::BinaryContainer_t &response) {
   std::string text(response.begin(), response.end());
   std::string::size_type pos = text.find("Content-Length:");
-  if (pos == std::string::npos) return -1;
+  if (pos == std::string::npos) {
+    // HTTP/2 sends lowercase header names.
+    pos = text.find("content-length:");
+    if (pos == std::string::npos) return -1;
+  }
   pos += std::string("Content-Length:").size();
   while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])))
     ++pos;
