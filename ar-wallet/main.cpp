@@ -25,6 +25,7 @@
 #include <crypto/jwk.h>
 #include <crypto/pem.h>
 #include <protocol/GetPrice.h>
+#include <protocol/GetTurboBalance.h>
 #include <protocol/GetTxAnchor.h>
 #include <protocol/Transaction.h>
 #include <wallet.h>
@@ -54,7 +55,7 @@ std::string defaultPemPath() {
 void printUsage(const char *prog) {
   std::cerr << "Usage: " << prog << " <command> [global options]\n\n"
             << "Commands:\n"
-            << "  balance         print the wallet balance (AR)\n"
+            << "  balance         print the wallet balance (AR + Turbo)\n"
             << "  address         print the wallet address\n"
             << "  send            send AR tokens to another wallet\n"
             << "  create-pem      create a new wallet and save it as PEM "
@@ -88,7 +89,8 @@ void printUsage(const char *prog) {
 void printCommandUsage(const char *prog, const std::string &command) {
   if (command == "balance") {
     std::cerr << "Usage: " << prog << " balance [global options]\n"
-              << "Prints the wallet balance in AR.\n";
+              << "Prints the wallet balance in AR and the ArDrive Turbo "
+                 "balance.\n";
   } else if (command == "address") {
     std::cerr << "Usage: " << prog << " address [global options]\n"
               << "Prints the wallet address.\n";
@@ -195,10 +197,26 @@ artools::wallet::WalletInstance_t loadWallet(char **argv, int argc, int start) {
 }
 
 /**
- * @brief Prints the wallet balance in AR as a floating-point number.
+ * @brief Prints the wallet balance in AR and the ArDrive Turbo balance.
+ *
+ * Queries the on-chain AR balance (in AR) and the ArDrive Turbo credit
+ * balance, printing both. If the Turbo balance cannot be determined (e.g. no
+ * Turbo account or an invalid response), 0.0 credits is shown.
  */
 int cmdBalance(const artools::wallet::WalletInstance_t &wallet) {
-  std::cout << wallet->getBalance(artools::wallet::Unit::AR) << std::endl;
+  std::cout << "AR balance: "
+            << wallet->getBalance(artools::wallet::Unit::AR) << " AR"
+            << std::endl;
+
+  double turboCredits = 0.0;
+  try {
+    artools::protocol::GetTurboBalance turbo(*wallet);
+    turboCredits = turbo.getBalanceInCredits();
+  } catch (const std::exception &) {
+    // No Turbo account or invalid response: report 0.0 credits.
+    turboCredits = 0.0;
+  }
+  std::cout << "Turbo balance: " << turboCredits << " credits" << std::endl;
   return 0;
 }
 

@@ -44,6 +44,7 @@ set(ARTOOLS_SOURCES
     libartools/src/crypto/sha384.cpp
     libartools/src/transport/TLSClient.cpp
     libartools/src/protocol/GetBalance.cpp
+    libartools/src/protocol/GetTurboBalance.cpp
     libartools/src/protocol/GetTxAnchor.cpp
     libartools/src/protocol/GetPrice.cpp
     libartools/src/protocol/Transaction.cpp)
