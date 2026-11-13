@@ -41,10 +41,11 @@ ar-tools/
 │   │   │   ├── sha256.h        # SHA-256 hashing
 │   │   │   └── sha384.h        # SHA-384 hashing
 │   │   ├── protocol/
-│   │   │   ├── GetBalance.h    # Balance query via the Arweave gateway
-│   │   │   ├── GetPrice.h      # Transaction price (fee) query
-│   │   │   ├── GetTxAnchor.h   # Transaction anchor query
-│   │   │   └── Transaction.h   # Signed v2 token-transfer transaction
+│   │   │   ├── GetBalance.h      # Balance query via the Arweave gateway
+│   │   │   ├── GetPrice.h        # Transaction price (fee) query
+│   │   │   ├── GetTurboBalance.h # ArDrive Turbo (winc) balance query
+│   │   │   ├── GetTxAnchor.h     # Transaction anchor query
+│   │   │   └── Transaction.h     # Signed v2 token-transfer transaction
 │   │   ├── transport/
 │   │   │   └── TLSClient.h     # TLS client (OpenSSL)
 │   │   ├── types.h             # Shared type definitions
@@ -108,7 +109,7 @@ ar-wallet <command> [global options]
 
 | Command | Description |
 |---|---|
-| `balance` | Prints the wallet balance in AR (floating point) |
+| `balance` | Prints the wallet balance in AR and ArDrive Turbo credits |
 | `address` | Prints the wallet address |
 | `send --target <addr> --quantity <amt> [--unit <unit>]` | Sends AR tokens to another wallet |
 | `create-pem --out <path> [--force]` | Creates a new wallet and saves it as PEM |
@@ -171,6 +172,29 @@ ar-wallet pem-to-jwk --pem wallet.pem --out wallet.json
 
 # Convert JWK to PEM (overwrite an existing file)
 ar-wallet jwk-to-pem --jwk wallet.json --out wallet.pem --force
+```
+
+### Querying Balances (`balance`)
+
+The `balance` command prints two balances for the wallet:
+
+1. **AR balance** — the on-chain AR balance, queried via
+   `GET /wallet/<address>/balance` on `arweave.net`.
+2. **Turbo balance** — the ArDrive Turbo (winc) credit balance, queried via
+   `GET /v1/account/balance/arweave?address=<address>` on
+   `payment.ardrive.io`. The value is shown in credits (10^12 winc = 1
+   credit). If the wallet has no Turbo account or the response is invalid,
+   `0.0` credits is shown.
+
+```
+ar-wallet balance [global options]
+```
+
+Example output:
+
+```
+AR balance: 1.23456 AR
+Turbo balance: 0.412620266518 credits
 ```
 
 ### Sending Tokens (`send`)
