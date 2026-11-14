@@ -56,6 +56,7 @@ ar-tools/
     ├── BASE64url_tests.cpp
     ├── BIP39_tests.cpp
     ├── PEM_tests.cpp
+    ├── Protocol_tests.cpp
     ├── SHA256_tests.cpp
     ├── SHA384_tests.cpp
     ├── Transaction_tests.cpp
@@ -156,6 +157,9 @@ ar-wallet balance
 # Query the balance of a wallet from a JWK file
 ar-wallet balance --jwk wallet.json
 
+# Query the balance via a custom gateway
+ar-wallet balance --gateway arweave.net:443
+
 # Send 1.5 AR to another wallet (default wallet)
 ar-wallet send --target <address> --quantity 1.5
 
@@ -164,6 +168,9 @@ ar-wallet send --target <address> --quantity 1000000000000 --unit winston
 
 # Send AR using a specific wallet source
 ar-wallet send --target <address> --quantity 0.5 --pem wallet.pem
+
+# Send AR via a custom gateway
+ar-wallet send --target <address> --quantity 0.5 --gateway arweave.net:443
 
 # Load a wallet from a mnemonic (interactive input)
 ar-wallet address --mnemonic
@@ -180,7 +187,9 @@ ar-wallet jwk-to-pem --jwk wallet.json --out wallet.pem --force
 The `balance` command prints two balances for the wallet:
 
 1. **AR balance** — the on-chain AR balance, queried via
-   `GET /wallet/<address>/balance` on `arweave.net`.
+   `GET /wallet/<address>/balance` on `arweave.net` (or a custom gateway via
+   `--gateway`). If the gateway is unreachable or returns an error, `0 AR` is
+   shown.
 2. **Turbo balance** — the ArDrive Turbo (winc) credit balance, queried via
    `GET /v1/account/balance/arweave?address=<address>` on
    `payment.ardrive.io`. The value is shown in credits (10^12 winc = 1
@@ -224,6 +233,7 @@ ar-wallet send --target <address> --quantity <amount> [--unit <unit>]
 | `--target <address>` | Recipient wallet address (required) |
 | `--quantity <amount>` | Amount to send (required) |
 | `--unit <unit>` | `AR` (default) or `winston` |
+| `--gateway <host[:port]>` | Custom Arweave gateway (default: `arweave.net:443`) |
 
 > **Note**: `send` makes live network requests and submits a real transaction.
 > It requires the wallet to hold sufficient balance to cover the amount plus

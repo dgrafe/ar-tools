@@ -60,13 +60,17 @@ GetTurboBalance::GetTurboBalance(const artools::wallet::WalletInstance &wallet,
   if (payload.empty())
     throw std::runtime_error("GetTurboBalance: empty response payload");
 
+  _balance = parseBalance(payload);
+}
+
+std::uint64_t GetTurboBalance::parseBalance(const std::string &payload) {
   rapidjson::Document doc;
   if (doc.Parse(payload.c_str()).HasParseError() || !doc.IsObject() ||
       !doc.HasMember("effectiveBalance") ||
       !doc["effectiveBalance"].IsString())
     throw std::runtime_error("GetTurboBalance: invalid balance response");
 
-  _balance = std::stoull(doc["effectiveBalance"].GetString());
+  return std::stoull(doc["effectiveBalance"].GetString());
 }
 
 } // namespace protocol

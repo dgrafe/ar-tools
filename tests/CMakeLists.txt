@@ -1,4 +1,4 @@
-add_executable(ar-test main.cpp BIP39_tests.cpp SHA256_tests.cpp SHA384_tests.cpp BASE64_tests.cpp BASE64url_tests.cpp PEM_tests.cpp WalletRecovery_tests.cpp Transaction_tests.cpp)
+add_executable(ar-test main.cpp BIP39_tests.cpp SHA256_tests.cpp SHA384_tests.cpp BASE64_tests.cpp BASE64url_tests.cpp PEM_tests.cpp WalletRecovery_tests.cpp Transaction_tests.cpp Protocol_tests.cpp)
 
 target_link_libraries(ar-test
  PRIVATE

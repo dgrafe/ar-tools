@@ -58,12 +58,16 @@ GetBalance::GetBalance(const artools::wallet::WalletInstance &wallet,
   if (payload.empty())
     throw std::runtime_error("GetBalance: empty response payload");
 
+  _balance = parseBalance(payload);
+}
+
+std::uint64_t GetBalance::parseBalance(const std::string &payload) {
   std::uint64_t balance = 0;
   for (char c : payload) {
     if (!std::isdigit(static_cast<unsigned char>(c))) break;
     balance = balance * 10 + static_cast<std::uint64_t>(c - '0');
   }
-  _balance = balance;
+  return balance;
 }
 
 double GetBalance::getBalance(Unit unit) const {

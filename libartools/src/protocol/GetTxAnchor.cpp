@@ -48,10 +48,13 @@ GetTxAnchor::GetTxAnchor(const std::string &host, const std::string &port) {
 
   // Extract the payload (body), which is the raw anchor string.
   std::string payload = artools::transport::TLSClient::extractPayload(response);
+  _anchor = parseAnchor(payload);
+}
+
+std::string GetTxAnchor::parseAnchor(const std::string &payload) {
   if (payload.empty())
     throw std::runtime_error("GetTxAnchor: empty response payload");
-
-  _anchor = payload;
+  return payload;
 }
 
 } // namespace protocol

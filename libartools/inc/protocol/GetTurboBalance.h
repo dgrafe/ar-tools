@@ -97,6 +97,20 @@ public:
            static_cast<double>(kWincPerCredit);
   }
 
+  /**
+   * @brief Parses a Turbo balance JSON payload into winc.
+   *
+   * Extracts the "effectiveBalance" field from the JSON response. Extracted
+   * as a static helper so the parsing logic can be unit-tested without a
+   * network connection.
+   *
+   * @param payload the JSON response body
+   * @return        the parsed balance in winc
+   * @throws std::runtime_error if the payload is not valid JSON or lacks the
+   *         "effectiveBalance" field
+   */
+  static std::uint64_t parseBalance(const std::string &payload);
+
 private:
   std::string _walletAddress;
   std::uint64_t _balance = 0;

@@ -72,6 +72,35 @@ public:
    */
   std::uint64_t getPrice() const { return _price; }
 
+  /**
+   * @brief Builds the request path for a price query.
+   *
+   * The target segment is only appended when a target address is given:
+   *   - /price/0/abc   : send tokens to "abc", no data
+   *   - /price/123     : upload 123 bytes, no token transfer
+   *   - /price/123/abc : send tokens to "abc" and upload 123 bytes
+   *
+   * Extracted as a static helper so the path logic can be unit-tested
+   * without a network connection.
+   *
+   * @param bytes  the number of data bytes
+   * @param target the target wallet address, or empty for no target
+   * @return        the request path
+   */
+  static std::string buildPath(std::uint64_t bytes,
+                               const std::string &target);
+
+  /**
+   * @brief Parses a price payload (a decimal number) into Winston.
+   *
+   * Extracted as a static helper so the parsing logic can be unit-tested
+   * without a network connection. Parsing stops at the first non-digit.
+   *
+   * @param payload the response body
+   * @return        the parsed price in Winston
+   */
+  static std::uint64_t parsePrice(const std::string &payload);
+
 private:
   std::uint64_t _price = 0;
 };

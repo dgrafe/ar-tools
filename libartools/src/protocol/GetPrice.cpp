@@ -29,14 +29,7 @@ GetPrice::GetPrice(std::uint64_t bytes, const std::string &target)
 GetPrice::GetPrice(std::uint64_t bytes, const std::string &target,
                    const std::string &host, const std::string &port) {
 
-  // Build the request path. The target segment is only appended when a target
-  // address is given:
-  //   - /price/0/abc   : send tokens to "abc", no data
-  //   - /price/123     : upload 123 bytes, no token transfer
-  //   - /price/123/abc : send tokens to "abc" and upload 123 bytes
-  std::string path = "/price/" + std::to_string(bytes);
-  if (!target.empty())
-    path += "/" + target;
+  std::string path = buildPath(bytes, target);
 
   std::string request =
       "GET " + path + " HTTP/1.1\r\n"
@@ -62,12 +55,24 @@ GetPrice::GetPrice(std::uint64_t bytes, const std::string &target,
   if (payload.empty())
     throw std::runtime_error("GetPrice: empty response payload");
 
+  _price = parsePrice(payload);
+}
+
+std::string GetPrice::buildPath(std::uint64_t bytes,
+                                const std::string &target) {
+  std::string path = "/price/" + std::to_string(bytes);
+  if (!target.empty())
+    path += "/" + target;
+  return path;
+}
+
+std::uint64_t GetPrice::parsePrice(const std::string &payload) {
   std::uint64_t price = 0;
   for (char c : payload) {
     if (!std::isdigit(static_cast<unsigned char>(c))) break;
     price = price * 10 + static_cast<std::uint64_t>(c - '0');
   }
-  _price = price;
+  return price;
 }
 
 } // namespace protocol

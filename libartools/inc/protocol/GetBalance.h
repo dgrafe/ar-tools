@@ -92,6 +92,18 @@ public:
    */
   double getBalance(Unit unit) const;
 
+  /**
+   * @brief Parses a balance payload (a decimal number) into Winston.
+   *
+   * Extracted as a static helper so the parsing logic can be unit-tested
+   * without a network connection. Leading non-digit characters are skipped;
+   * parsing stops at the first non-digit.
+   *
+   * @param payload the response body
+   * @return        the parsed balance in Winston
+   */
+  static std::uint64_t parseBalance(const std::string &payload);
+
 private:
   std::string _walletAddress;
   std::uint64_t _balance = 0;

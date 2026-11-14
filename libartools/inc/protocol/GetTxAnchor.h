@@ -61,6 +61,18 @@ public:
    */
   std::string getAnchor() const { return _anchor; }
 
+  /**
+   * @brief Validates and normalises an anchor payload.
+   *
+   * Extracted as a static helper so the validation logic can be unit-tested
+   * without a network connection. Throws if the payload is empty.
+   *
+   * @param payload the response body
+   * @return        the trimmed anchor string
+   * @throws std::runtime_error if the payload is empty
+   */
+  static std::string parseAnchor(const std::string &payload);
+
 private:
   std::string _anchor;
 };

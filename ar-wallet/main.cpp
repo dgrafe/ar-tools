@@ -287,13 +287,20 @@ int cmdBalance(const artools::wallet::WalletInstance_t &wallet,
   if (!gateway.empty())
     parseGateway(gateway, host, port);
 
-  std::cout << "AR balance: ";
-  if (gateway.empty())
-    std::cout << wallet->getBalance(artools::wallet::Unit::AR);
-  else
-    std::cout << artools::protocol::GetBalance(*wallet, host, port)
-                     .getBalance(artools::wallet::Unit::AR);
-  std::cout << " AR" << std::endl;
+  // Query the on-chain AR balance. If the gateway is unreachable or returns
+  // an error, report 0 AR instead of failing the whole command.
+  double arBalance = 0.0;
+  try {
+    if (gateway.empty())
+      arBalance = wallet->getBalance(artools::wallet::Unit::AR);
+    else
+      arBalance = artools::protocol::GetBalance(*wallet, host, port)
+                      .getBalance(artools::wallet::Unit::AR);
+  } catch (const std::exception &) {
+    // Gateway unreachable or error response: report 0 AR.
+    arBalance = 0.0;
+  }
+  std::cout << "AR balance: " << arBalance << " AR" << std::endl;
 
   double turboCredits = 0.0;
   try {
