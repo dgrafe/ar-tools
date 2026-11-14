@@ -62,6 +62,14 @@ public:
 
   BIP39();
 
+  /**
+   * @brief Overwrites all sensitive state before destruction.
+   *
+   * The mnemonic sentence, the root seed and the HMAC-DRBG key material are
+   * wiped with OPENSSL_cleanse() so they do not linger in freed heap memory.
+   */
+  ~BIP39();
+
   bool initFromMnemonicString(const std::string &mnemonicString,
                               const std::string &password = "");
   std::string getMnemonicString() { return _mnemonicString; }

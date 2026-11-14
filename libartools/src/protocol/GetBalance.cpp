@@ -49,6 +49,10 @@ GetBalance::GetBalance(const artools::wallet::WalletInstance &wallet,
   BinaryContainer_t response;
   client.read(response);
 
+  // Reject gateway error pages (4xx/5xx) instead of parsing them as a
+  // balance, which would silently report 0.
+  artools::transport::TLSClient::ensureHttpSuccess(response, "GetBalance");
+
   // Extract the payload (body) and parse it as an unsigned integer.
   std::string payload = artools::transport::TLSClient::extractPayload(response);
   if (payload.empty())

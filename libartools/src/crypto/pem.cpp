@@ -18,6 +18,16 @@
 #include <algorithm>
 #include <cstdio>
 
+// O_* constants and mode bits for creating the key file with 0600.
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
@@ -443,9 +453,20 @@ std::string PEM::getPrivateKeyAsHex() {
  */
 bool PEM::exportAsFile(const std::string &pathToPEM) {
 
-  std::shared_ptr<FILE> fptr(fopen(pathToPEM.c_str(), "w"), fclose);
-  if (nullptr == fptr || !PEM_write_PrivateKey(fptr.get(), _pkey.get(), nullptr,
-                                               nullptr, 0, 0, nullptr))
+  // The file holds the private key: it must never exist with group/other
+  // permissions, not even briefly. open() with mode 0600 creates it with
+  // owner-only permissions atomically; fopen(..., "w") would create it with
+  // 0666 & ~umask (typically 0644) first, leaving a world-readable window
+  // until a follow-up chmod.
+  const int fd = ::open(pathToPEM.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0)
+    return false;
+  std::shared_ptr<FILE> fptr(fdopen(fd, "w"), fclose);
+  if (nullptr == fptr)
+    return false;
+
+  if (!PEM_write_PrivateKey(fptr.get(), _pkey.get(), nullptr, nullptr, 0, 0,
+                            nullptr))
     return false;
 
   return true;

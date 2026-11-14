@@ -54,6 +54,9 @@ GetPrice::GetPrice(std::uint64_t bytes, const std::string &target,
   BinaryContainer_t response;
   client.read(response);
 
+  // Reject gateway error pages (4xx/5xx) instead of parsing them as a price.
+  artools::transport::TLSClient::ensureHttpSuccess(response, "GetPrice");
+
   // Extract the payload (body) and parse it as an unsigned integer.
   std::string payload = artools::transport::TLSClient::extractPayload(response);
   if (payload.empty())

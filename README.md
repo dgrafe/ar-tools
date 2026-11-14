@@ -129,7 +129,8 @@ Each command provides command-specific help: `ar-wallet <command> --help`.
 | `--mnemonic ["<phrase>"]` | Loads the wallet from a BIP-39 phrase; without a phrase, prompts interactively |
 | `--jwk <path>` | Loads the wallet from a JWK file |
 | `--pem <path>` | Loads the wallet from a PEM file (overrides the default) |
-| `--force` | Overwrites an existing file (only with `create-pem`/`create-jwk`) |
+| `--force` | Overwrites an existing output file (with `create-pem`, `create-jwk`, `pem-to-jwk`, `jwk-to-pem`) |
+| `--gateway <host[:port]>` | Uses a custom Arweave gateway for network queries (`balance`, `send`); default: `arweave.net:443` |
 
 If **no** source is given, the default wallet at `~/.ar-tools/wallet.pem` is
 used.
@@ -236,10 +237,26 @@ ar-wallet send --target <address> --quantity <amount> [--unit <unit>]
   function: mnemonic → root seed → RSA key).
 - A wallet can be restored from a PEM or JWK file at any time; the mnemonic
   is only required if no such file exists.
+- Mnemonic phrases are validated against the **BIP-39 checksum**: a mistyped
+  word is rejected instead of silently deriving a different (empty) wallet.
 - `create-pem`/`create-jwk` refuse to overwrite an existing file unless
   `--force` is given.
+- Written key files (PEM/JWK) are created atomically with **owner-only
+  permissions** (`0600`), so other users on the system cannot read the
+  private key.
+- Sensitive in-memory state (mnemonic, root seed, DRBG state) is
+  cryptographically overwritten (`OPENSSL_cleanse`) when a BIP-39 instance is
+  destroyed.
 - The interactive mnemonic input (`--mnemonic` without an argument) prevents
-  the phrase from appearing in the shell history.
+  the phrase from appearing in the shell history, and disables the terminal
+  echo so it does not remain in the scrollback either. Prefer it over passing
+  the phrase as a command-line argument, which is visible in the process list.
+- `send` checks the wallet balance locally before signing: an amount that
+  exceeds the balance plus the transaction fee is rejected without a network
+  submission.
+- Network requests enforce TLS ≥ 1.2 with certificate and hostname
+  verification, and use a 30-second connect/read/write timeout so a stalled
+  gateway cannot hang the client.
 
 ## License
 

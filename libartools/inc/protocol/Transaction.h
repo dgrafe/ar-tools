@@ -101,10 +101,22 @@ public:
   /**
    * @brief Submits the transaction to the network via POST /tx.
    *
+   * Uses the default gateway (arweave.net:443).
+   *
    * @return true if the node accepted the transaction
    * @throws std::runtime_error if the submission fails
    */
   bool submit() const;
+
+  /**
+   * @brief Submits the transaction to a custom gateway via POST /tx.
+   *
+   * @param host the gateway hostname
+   * @param port the gateway port as a string
+   * @return     true if the node accepted the transaction
+   * @throws std::runtime_error if the submission fails
+   */
+  bool submit(const std::string &host, const std::string &port) const;
 
 private:
   std::string _id;

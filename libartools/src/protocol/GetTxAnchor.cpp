@@ -43,6 +43,9 @@ GetTxAnchor::GetTxAnchor(const std::string &host, const std::string &port) {
   BinaryContainer_t response;
   client.read(response);
 
+  // Reject gateway error pages (4xx/5xx) instead of using them as an anchor.
+  artools::transport::TLSClient::ensureHttpSuccess(response, "GetTxAnchor");
+
   // Extract the payload (body), which is the raw anchor string.
   std::string payload = artools::transport::TLSClient::extractPayload(response);
   if (payload.empty())

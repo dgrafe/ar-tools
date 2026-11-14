@@ -263,11 +263,14 @@ Transaction::Transaction(artools::wallet::WalletInstance &wallet,
   _json = buffer.GetString();
 }
 
-bool Transaction::submit() const {
+bool Transaction::submit() const { return submit(kHost, kPort); }
+
+bool Transaction::submit(const std::string &host,
+                         const std::string &port) const {
 
   std::string request =
       "POST /tx HTTP/1.1\r\n"
-      "Host: " + std::string(kHost) + "\r\n"
+      "Host: " + host + "\r\n"
       "User-Agent: ar-tools/" ARTOOLS_VERSION "\r\n"
       "Accept: application/json\r\n"
       "Content-Type: application/json\r\n"
@@ -276,31 +279,18 @@ bool Transaction::submit() const {
       "\r\n" +
       _json;
 
-  artools::transport::TLSClient client(kHost, kPort);
+  artools::transport::TLSClient client(host, port);
   BinaryContainer_t reqBin(request.begin(), request.end());
   client.write(reqBin);
 
   BinaryContainer_t response;
   client.read(response);
 
-  // Parse the HTTP status line (e.g. "HTTP/1.1 200 OK").
-  std::string raw(response.begin(), response.end());
-  std::string statusLine = raw.substr(0, raw.find("\r\n"));
-  int status = 0;
-  // statusLine looks like "HTTP/1.1 200 OK".
-  auto sp1 = statusLine.find(' ');
-  auto sp2 = statusLine.find(' ', sp1 + 1);
-  if (sp1 != std::string::npos && sp2 != std::string::npos)
-    status = std::stoi(statusLine.substr(sp1 + 1, sp2 - sp1 - 1));
+  // A successful submission returns HTTP 200 with body "OK"; anything else
+  // (including an unparseable response) is an error.
+  artools::transport::TLSClient::ensureHttpSuccess(response, "Transaction");
 
-  std::string payload = artools::transport::TLSClient::extractPayload(response);
-
-  // A successful submission returns HTTP 200 with body "OK".
-  if (status == 200)
-    return true;
-
-  throw std::runtime_error("Transaction submission failed (HTTP " +
-                           std::to_string(status) + "): " + payload);
+  return true;
 }
 
 } // namespace protocol

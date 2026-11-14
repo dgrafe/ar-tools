@@ -21,9 +21,14 @@
 #include <stdexcept>
 #include <string>
 
+// Terminal echo control for the interactive mnemonic prompt (POSIX termios).
+#include <termios.h>
+#include <unistd.h>
+
 #include <crypto/bip39.h>
 #include <crypto/jwk.h>
 #include <crypto/pem.h>
+#include <protocol/GetBalance.h>
 #include <protocol/GetPrice.h>
 #include <protocol/GetTurboBalance.h>
 #include <protocol/GetTxAnchor.h>
@@ -76,7 +81,9 @@ void printUsage(const char *prog) {
             << "  --pem <path>            load wallet from a PEM file (overrides "
                "the default)\n"
             << "  --force                 overwrite an existing file (only with "
-               "create-pem/create-jwk)\n\n"
+               "create-pem/create-jwk)\n"
+            << "  --gateway <host[:port]> use a custom Arweave gateway "
+               "(default: arweave.net:443)\n\n"
             << "If no wallet source is given, the default PEM file "
                "~/.ar-tools/wallet.pem is used.\n"
             << "Run '" << prog << " <command> --help' for command-specific "
@@ -136,6 +143,67 @@ void printCommandUsage(const char *prog, const std::string &command) {
 }
 
 /**
+ * @brief Reads a line from stdin with the terminal echo disabled.
+ *
+ * The mnemonic phrase is a secret: with echo enabled it would remain readable
+ * in the terminal scrollback (and in screen/tmux capture) even though the
+ * interactive prompt keeps it out of the shell history. This helper turns
+ * off ECHO around the read, like ssh/sudo do for passwords, and restores the
+ * original terminal attributes afterwards.
+ *
+ * @return the line read from stdin
+ */
+std::string readSecretLine() {
+  std::string line;
+
+  termios saved{};
+  const bool haveTty = isatty(STDIN_FILENO) == 1 &&
+                       tcgetattr(STDIN_FILENO, &saved) == 0;
+  if (haveTty) {
+    termios masked = saved;
+    masked.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &masked);
+  }
+
+  std::getline(std::cin, line);
+
+  if (haveTty) {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved);
+    std::cout << std::endl; // terminate the masked line visually
+  }
+
+  return line;
+}
+
+/**
+ * @brief Parses a --gateway argument into host and port.
+ *
+ * Accepts "host" (port defaults to 443) and "host:port".
+ *
+ * @param value the raw --gateway value
+ * @param host  receives the hostname
+ * @param port  receives the port as a string
+ * @throws std::runtime_error if the value is empty or has an empty host
+ */
+void parseGateway(const std::string &value, std::string &host,
+                  std::string &port) {
+  if (value.empty())
+    throw std::runtime_error("--gateway requires a hostname");
+
+  const auto colon = value.rfind(':');
+  if (colon == std::string::npos) {
+    host = value;
+    port = "443";
+    return;
+  }
+
+  host = value.substr(0, colon);
+  port = value.substr(colon + 1);
+  if (host.empty() || port.empty())
+    throw std::runtime_error("--gateway requires 'host[:port]'");
+}
+
+/**
  * @brief Loads a wallet from the global source options.
  *
  * Scans the argument list (starting at @p start) for one of --mnemonic,
@@ -157,9 +225,10 @@ artools::wallet::WalletInstance_t loadWallet(char **argv, int argc, int start) {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         phrase = argv[++i];
       } else {
-        // No phrase given: prompt for it interactively.
+        // No phrase given: prompt for it interactively, with the terminal
+        // echo disabled so the phrase does not end up in the scrollback.
         std::cout << "Enter mnemonic phrase: " << std::flush;
-        std::getline(std::cin, phrase);
+        phrase = readSecretLine();
       }
       artools::crypto::BIP39 bip39;
       if (!bip39.initFromMnemonicString(phrase))
@@ -182,6 +251,11 @@ artools::wallet::WalletInstance_t loadWallet(char **argv, int argc, int start) {
       if (i + 1 >= argc)
         throw std::runtime_error(opt + " requires a value");
       ++i;
+    } else if (opt == "--gateway") {
+      // Parsed by the command handlers; skip it and its value here.
+      if (i + 1 >= argc)
+        throw std::runtime_error("--gateway requires a value");
+      ++i;
     } else {
       throw std::runtime_error("unknown global option '" + opt + "'");
     }
@@ -202,14 +276,29 @@ artools::wallet::WalletInstance_t loadWallet(char **argv, int argc, int start) {
  * Queries the on-chain AR balance (in AR) and the ArDrive Turbo credit
  * balance, printing both. If the Turbo balance cannot be determined (e.g. no
  * Turbo account or an invalid response), 0.0 credits is shown.
+ *
+ * @param wallet  the wallet whose balances are queried
+ * @param gateway optional custom gateway ("host:port"); empty selects the
+ *                default arweave.net:443
  */
-int cmdBalance(const artools::wallet::WalletInstance_t &wallet) {
-  std::cout << "AR balance: "
-            << wallet->getBalance(artools::wallet::Unit::AR) << " AR"
-            << std::endl;
+int cmdBalance(const artools::wallet::WalletInstance_t &wallet,
+               const std::string &gateway) {
+  std::string host, port;
+  if (!gateway.empty())
+    parseGateway(gateway, host, port);
+
+  std::cout << "AR balance: ";
+  if (gateway.empty())
+    std::cout << wallet->getBalance(artools::wallet::Unit::AR);
+  else
+    std::cout << artools::protocol::GetBalance(*wallet, host, port)
+                     .getBalance(artools::wallet::Unit::AR);
+  std::cout << " AR" << std::endl;
 
   double turboCredits = 0.0;
   try {
+    // The Turbo balance is always served by payment.ardrive.io; a custom
+    // gateway does not apply to it.
     artools::protocol::GetTurboBalance turbo(*wallet);
     turboCredits = turbo.getBalanceInCredits();
   } catch (const std::exception &) {
@@ -231,21 +320,25 @@ int cmdAddress(const artools::wallet::WalletInstance_t &wallet) {
 /**
  * @brief Sends AR tokens to another wallet address.
  *
- * Parses --target and --quantity, fetches the current transaction anchor and
+ * Parses --target, --quantity and --unit, checks that the wallet balance
+ * covers the amount plus the fee, fetches the current transaction anchor and
  * price from the network, builds a signed v2 token-transfer transaction and
  * submits it to the network.
  *
- * @param wallet the sending wallet
- * @param argv   the argument vector
- * @param argc   the number of arguments
- * @param start  index of the first option
- * @return       0 on success, non-zero on failure
+ * @param wallet  the sending wallet
+ * @param argv    the argument vector
+ * @param argc    the number of arguments
+ * @param start   index of the first option
+ * @param gateway optional custom gateway ("host:port"); empty selects the
+ *                default arweave.net:443
+ * @return        0 on success, non-zero on failure
  */
 int cmdSend(const artools::wallet::WalletInstance_t &wallet, char **argv,
-            int argc, int start) {
+            int argc, int start, const std::string &gateway) {
   std::string target;
   std::string quantityStr;
   std::string unit = "AR";
+  std::string host, port;
 
   for (int i = start; i < argc; ++i) {
     std::string opt = argv[i];
@@ -261,6 +354,10 @@ int cmdSend(const artools::wallet::WalletInstance_t &wallet, char **argv,
       if (i + 1 >= argc)
         throw std::runtime_error("--unit requires a value");
       unit = argv[++i];
+    } else if (opt == "--gateway") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--gateway requires a value");
+      parseGateway(argv[++i], host, port);
     } else if (opt == "--mnemonic" || opt == "--jwk" || opt == "--pem") {
       // Global wallet-source options; skip them and their value here. They
       // are handled by loadWallet.
@@ -301,10 +398,22 @@ int cmdSend(const artools::wallet::WalletInstance_t &wallet, char **argv,
   artools::protocol::GetTxAnchor anchor;
   artools::protocol::GetPrice price(0, target);
 
+  // Pre-check the balance before signing: report an insufficient balance
+  // locally instead of letting the network reject the transaction.
+  const std::uint64_t fee = price.getPrice();
+  const std::uint64_t balance = wallet->getBalance();
+  if (balance < quantityWinston + fee)
+    throw std::runtime_error(
+        "insufficient balance: " + std::to_string(balance) +
+        " winston available, " + std::to_string(quantityWinston + fee) +
+        " winston required (amount + fee)");
+
   // Build and submit the signed transaction.
-  artools::protocol::Transaction tx(*wallet, target, quantityWinston,
-                                    price.getPrice(), anchor.getAnchor());
-  if (!tx.submit())
+  artools::protocol::Transaction tx(*wallet, target, quantityWinston, fee,
+                                     anchor.getAnchor());
+  const bool submitted =
+      host.empty() ? tx.submit() : tx.submit(host, port);
+  if (!submitted)
     throw std::runtime_error("Transaction submission failed");
 
   std::cout << "sent " << quantityWinston << " winston to " << target
@@ -532,10 +641,20 @@ int main(int argc, char **argv) {
     // default PEM file if no explicit source is given.
     auto wallet = loadWallet(argv, argc, 2);
 
+    // Extract a custom gateway if given (used by balance and send).
+    std::string gateway;
+    for (int i = 2; i < argc; ++i) {
+      if (std::string(argv[i]) == "--gateway") {
+        if (i + 1 >= argc)
+          throw std::runtime_error("--gateway requires a value");
+        gateway = argv[++i];
+      }
+    }
+
     if (command == "balance")
-      return cmdBalance(wallet);
+      return cmdBalance(wallet, gateway);
     if (command == "send")
-      return cmdSend(wallet, argv, argc, 2);
+      return cmdSend(wallet, argv, argc, 2, gateway);
     return cmdAddress(wallet);
 
   } catch (const std::exception &e) {

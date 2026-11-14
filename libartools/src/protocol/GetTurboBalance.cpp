@@ -52,6 +52,9 @@ GetTurboBalance::GetTurboBalance(const artools::wallet::WalletInstance &wallet,
   BinaryContainer_t response;
   client.read(response);
 
+  // Reject gateway error pages (4xx/5xx) instead of parsing them as JSON.
+  artools::transport::TLSClient::ensureHttpSuccess(response, "GetTurboBalance");
+
   // Extract the payload (body) and parse the JSON "effectiveBalance" field.
   std::string payload = artools::transport::TLSClient::extractPayload(response);
   if (payload.empty())

@@ -397,6 +397,23 @@ BIP39::BIP39() {
 }
 
 /**
+ * @brief Overwrites all sensitive state before destruction.
+ *
+ * The mnemonic sentence, the root seed and the HMAC-DRBG key material are
+ * wiped with OPENSSL_cleanse() so they do not linger in freed heap memory.
+ * A plain memset() could be elided by the optimiser; OPENSSL_cleanse() is
+ * guaranteed to perform the writes.
+ */
+BIP39::~BIP39() {
+
+  OPENSSL_cleanse(_mnemonicString.data(), _mnemonicString.size());
+  OPENSSL_cleanse(_mnemonicSeed.data(), _mnemonicSeed.size() * sizeof(std::uint16_t));
+  OPENSSL_cleanse(_rootSeed.data(), _rootSeed.size());
+  OPENSSL_cleanse(_drbg.K.data(), _drbg.K.size());
+  OPENSSL_cleanse(_drbg.V.data(), _drbg.V.size());
+}
+
+/**
  * @brief Generates a new 12-word BIP-39 mnemonic from 128 bits of entropy.
  *
  * Implements the BIP-39 mnemonic encoding algorithm:
@@ -431,10 +448,16 @@ void BIP39::createMnemonicSeed() {
 
   // padded to 11 bit times 12 words = 132 bits
   const auto totalBytes = entropyBytes + 1;
-  std::array<std::uint8_t, totalBytes> randomPattern;
+  std::array<std::uint8_t, totalBytes> randomPattern{};
 
-  // create some entropy for the 128 bits
-  const int rc = RAND_bytes(randomPattern.data(), entropyBytes);
+  // create some entropy for the 128 bits. RAND_bytes() draws from the
+  // operating-system CSPRNG and can only fail in a broken entropy state;
+  // proceeding with uninitialised memory would silently derive the wallet
+  // from garbage, so the failure must be fatal.
+  if (RAND_bytes(randomPattern.data(), entropyBytes) != 1)
+    throw std::runtime_error(
+        std::string("BIP39: CSPRNG failure (RAND_bytes): ") +
+        ERR_error_string(ERR_get_error(), nullptr));
 
   // hash the entropy vector and pad the ramaining 4 bits with the first bits
   // from the hash
@@ -474,32 +497,80 @@ void BIP39::createMnemonicSeed() {
 }
 
 /**
+ * @brief Verifies the BIP-39 checksum embedded in a sequence of word indices.
+ *
+ * Reconstructs the 132-bit entropy || checksum stream from the twelve 11-bit
+ * indices, re-computes SHA-256 over the leading 128 bits and compares the
+ * high nibble of the first hash byte against the trailing 4 checksum bits.
+ *
+ * @param indices the twelve 11-bit wordlist indices
+ * @return        true if the checksum matches
+ */
+static bool verifyChecksum(const BIP39::MnemonicSeedType &indices) {
+
+  // Reassemble the 132-bit stream MSB-first.
+  std::array<std::uint8_t, 17> stream{};
+  std::uint8_t bitPosition = 7;
+  std::uint8_t bytePosition = 0;
+  for (const auto index : indices) {
+    for (auto extractedBits = 0; extractedBits < BIP39::BitsPerWord;
+         extractedBits++) {
+      const std::uint8_t bit = (index >> (BIP39::BitsPerWord - 1 -
+                                          extractedBits)) &
+                               0x1;
+      stream[bytePosition] |= bit << bitPosition;
+
+      if (0 == bitPosition) {
+        bitPosition = 7;
+        bytePosition++;
+      } else {
+        bitPosition--;
+      }
+    }
+  }
+
+  // The first 16 bytes are the entropy; bits 128..131 of the MSB-first
+  // stream occupy the HIGH nibble of byte 16 and carry the checksum.
+  // BIP-39 mandates checksum = first SHA-256(entropy) bits.
+  SHA256 entropyHash(stream.data(), 16);
+  const std::uint8_t expected = entropyHash.getHash()[0] >> 4;
+  const std::uint8_t actual = stream[16] >> 4;
+
+  return expected == actual;
+}
+
+/**
  * @brief Restores a BIP-39 instance from an existing mnemonic sentence.
  *
  * Parses the space-separated mnemonic, resolves each word to its 11-bit index
- * via a binary search over the alphabetically sorted wordlist, and derives the
- * BIP-39 root seed with the supplied (possibly empty) passphrase. On success
- * the instance's mnemonic, word indices and root seed are all replaced.
+ * via a binary search over the alphabetically sorted wordlist, verifies the
+ * embedded BIP-39 checksum and derives the BIP-39 root seed with the supplied
+ * (possibly empty) passphrase. On success the instance's mnemonic, word
+ * indices and root seed are all replaced.
  *
  * @param mnemonicString the 12-word BIP-39 sentence, words separated by single
  *                       spaces
  * @param password       optional BIP-39 passphrase; the empty string (default)
  *                       selects the standard "mnemonic" salt
  * @return               true on success; false if the sentence does not
- *                       contain exactly NumberOfWords words or any word is not
- *                       present in the wordlist
+ *                       contain exactly NumberOfWords words, any word is not
+ *                       present in the wordlist or the checksum is invalid
  *
  * @note The passphrase is a BIP-39 extension that adds a second factor to the
  *       seed derivation: two different passphrases over the same mnemonic
  *       yield two different root seeds (and therefore two different wallets).
  *       It is not stored anywhere and must be remembered by the user.
+ *
+ * @note The checksum verification is a security feature, not a formality: a
+ *       mistyped but wordlist-valid mnemonic would otherwise silently derive
+ *       a *different* (empty) wallet instead of being rejected.
  */
 bool BIP39::initFromMnemonicString(const std::string &mnemonicString,
                                    const std::string &password) {
 
   std::uint8_t seedIndex = 0;
   std::string delim = " ";
-  MnemonicSeedType buf;
+  MnemonicSeedType buf{};
 
   std::string tokenizer_input = mnemonicString;
   char *token = std::strtok(tokenizer_input.data(), delim.data());
@@ -518,6 +589,11 @@ bool BIP39::initFromMnemonicString(const std::string &mnemonicString,
   }
 
   if (seedIndex != BIP39::NumberOfWords)
+    return false;
+
+  // Reject mnemonics whose checksum does not match their entropy: a typo
+  // must never silently produce a different wallet.
+  if (!verifyChecksum(buf))
     return false;
 
   _mnemonicSeed = buf;
@@ -586,11 +662,17 @@ BIP39::RootSeedType BIP39::createRootSeed(const std::string &_mnemonicString,
                                           const std::string password) {
 
   std::string salt = "mnemonic" + password;
-  RootSeedType digest;
+  RootSeedType digest{};
 
-  PKCS5_PBKDF2_HMAC(_mnemonicString.data(), _mnemonicString.size(),
-                    (const unsigned char *)salt.data(), salt.size(), 2048,
-                    EVP_sha512(), 64, (unsigned char *)digest.data());
+  // A PBKDF2 failure would leave the digest zeroed and therefore derive the
+  // wallet from a known constant; treat it as fatal.
+  if (PKCS5_PBKDF2_HMAC(_mnemonicString.data(), _mnemonicString.size(),
+                        (const unsigned char *)salt.data(), salt.size(), 2048,
+                        EVP_sha512(), 64,
+                        (unsigned char *)digest.data()) != 1)
+    throw std::runtime_error(
+        std::string("BIP39: PBKDF2 failure: ") +
+        ERR_error_string(ERR_get_error(), nullptr));
 
   return digest;
 }

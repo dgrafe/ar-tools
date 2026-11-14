@@ -15,12 +15,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <cstdio>
+#include <fstream>
+#include <memory>
 #include <string>
+
+// O_* constants and mode bits for creating the key file with 0600.
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include "rapidjson/document.h"
 #include "rapidjson/filewritestream.h"
 #include "rapidjson/writer.h"
-#include <rapidjson/ostreamwrapper.h>
 
 #include "crypto/base64url.h"
 #include "crypto/jwk.h"
@@ -33,21 +39,54 @@ namespace crypto {
  *
  * Reads the file into a string and parses it with rapidjson. The eight RSA
  * components (e, n, d, p, q, dp, dq, qi) are extracted as base64url strings
- * and stored verbatim; the "kty" field is assumed to be "RSA".
+ * and stored verbatim. The document is validated before field access: it
+ * must be a JSON object, its "kty" must be "RSA" and all eight components
+ * must be present as strings. Unvalidated subscript access (doc["e"]) would
+ * otherwise trip a rapidjson assertion on malformed input.
  *
  * @param pathToJWK filesystem path of the JWK JSON file
- * @throws std::runtime_error if the JSON is malformed
+ * @throws std::runtime_error if the file cannot be opened, the JSON is
+ *                             malformed or a required field is missing or of
+ *                             the wrong type
  */
 JWK::JWK(const std::string &pathToJWK) {
 
   std::ifstream file(pathToJWK);
+  if (!file.is_open())
+    throw std::runtime_error("JWK: cannot open file '" + pathToJWK + "'");
+
   std::string json((std::istreambuf_iterator<char>(file)),
                    std::istreambuf_iterator<char>());
 
   rapidjson::Document doc;
   doc.Parse(json.c_str());
   if (doc.HasParseError())
-    throw std::runtime_error("Error parsing JWK: " + doc.GetParseError());
+    // GetParseError() returns a ParseErrorCode enum, not a string: it must
+    // be converted explicitly (appending it to a string literal would be
+    // pointer arithmetic, i.e. undefined behaviour).
+    throw std::runtime_error("JWK: JSON parse error in '" + pathToJWK +
+                             "' (code " +
+                             std::to_string(doc.GetParseError()) +
+                             ", offset " +
+                             std::to_string(doc.GetErrorOffset()) + ")");
+
+  if (!doc.IsObject())
+    throw std::runtime_error("JWK: root element is not a JSON object");
+
+  // The JWK must describe an RSA key; anything else cannot seed the RSA
+  // components this class stores.
+  if (!doc.HasMember("kty") || !doc["kty"].IsString() ||
+      std::string(doc["kty"].GetString()) != "RSA")
+    throw std::runtime_error("JWK: missing or non-RSA 'kty' field");
+
+  // Every component must be present as a string before it is read.
+  static const char *kRequiredFields[] = {"e",  "n",  "d",  "p",
+                                          "q",  "dp", "dq", "qi"};
+  for (const char *field : kRequiredFields) {
+    if (!doc.HasMember(field) || !doc[field].IsString())
+      throw std::runtime_error(std::string("JWK: missing or non-string '") +
+                               field + "' field");
+  }
 
   _e = doc["e"].GetString();
   _n = doc["n"].GetString();
@@ -117,12 +156,16 @@ JWK::JWK(const BIP39 &bip39) {
  * field names follow the Arweave JWKInterface convention (dp, dq, qi rather
  * than dP, dQ, qInv).
  *
+ * The file holds the private key: it is created atomically with owner-only
+ * permissions (0600) via open() + fdopen(). An ofstream would create it with
+ * 0666 & ~umask (typically 0644) first, leaving a world-readable window until
+ * a follow-up chmod.
+ *
  * @param pathToJWP filesystem path of the output JWK JSON file
  * @return          true on success, false if the file cannot be opened
  */
 bool JWK::exportToFile(const std::string &pathToJWP) {
 
-  std::ofstream file(pathToJWP);
   rapidjson::Document document;
 
   document.SetObject();
@@ -155,12 +198,19 @@ bool JWK::exportToFile(const std::string &pathToJWP) {
   stringBuf.SetString(_qi.c_str(), allocator);
   document.AddMember("qi", stringBuf, allocator);
 
-  std::ofstream ofs(pathToJWP);
-  if (!ofs.is_open())
+  // Create the file with owner-only permissions (0600) atomically; see the
+  // function header for why ofstream must not be used here.
+  const int fd =
+      ::open(pathToJWP.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0)
+    return false;
+  std::shared_ptr<FILE> fptr(fdopen(fd, "w"), fclose);
+  if (nullptr == fptr)
     return false;
 
-  rapidjson::OStreamWrapper osw(ofs);
-  rapidjson::Writer<rapidjson::OStreamWrapper> writer(osw);
+  char writeBuffer[65536];
+  rapidjson::FileWriteStream fws(fptr.get(), writeBuffer, sizeof(writeBuffer));
+  rapidjson::Writer<rapidjson::FileWriteStream> writer(fws);
   document.Accept(writer);
 
   return true;

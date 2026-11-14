@@ -59,6 +59,32 @@ public:
    */
   static std::string extractPayload(const BinaryContainer_t &response);
 
+  /**
+   * @brief Parses the HTTP status code from a raw response.
+   *
+   * Extracts the numeric code from the status line
+   * ("HTTP/1.1 200 OK" -> 200).
+   *
+   * @param response the raw HTTP response bytes
+   * @return         the status code, or 0 if the status line cannot be parsed
+   */
+  static int getHttpStatusCode(const BinaryContainer_t &response);
+
+  /**
+   * @brief Verifies that the response carries a 2xx status code.
+   *
+   * Without this check a gateway error page (4xx/5xx) would be parsed as a
+   * payload and silently yield a wrong result (e.g. a balance of 0). Throws
+   * std::runtime_error for any non-2xx status, including the response body
+   * for context.
+   *
+   * @param response the raw HTTP response bytes
+   * @param context caller identifier included in the error message
+   * @throws std::runtime_error if the status is not 2xx or unparseable
+   */
+  static void ensureHttpSuccess(const BinaryContainer_t &response,
+                                const std::string &context);
+
 private:
   TLSContext_t _ctx;
   TLSConnection_t _ssl;

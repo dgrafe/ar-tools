@@ -17,9 +17,24 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+
+// Socket-level timeouts (SO_RCVTIMEO/SO_SNDTIMEO) are POSIX; on Windows the
+// equivalent is WSA's SO_RCVTIMEO with DWORD milliseconds, which is handled
+// via the _WIN32 branch below.
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using SocketTimeout_t = DWORD;
+#else
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+using SocketTimeout_t = struct timeval;
+#endif
 
 #include "transport/TLSClient.h"
 
@@ -30,6 +45,95 @@ namespace {
 
 // HTTP header/body separator.
 constexpr char kHeaderSep[] = "\r\n\r\n";
+
+// Connect/read/write timeout in seconds. A gateway that stops responding
+// would otherwise block SSL_read()/SSL_write() forever.
+constexpr int kTimeoutSeconds = 30;
+
+/**
+ * @brief Applies SO_RCVTIMEO/SO_SNDTIMEO to the socket behind a BIO.
+ *
+ * Retrieves the OS socket descriptor from the connect BIO and sets a
+ * receive and send timeout, so a stalled peer cannot block the client
+ * indefinitely. Failures to set the option are non-fatal: the connection
+ * still works, it just may hang on a dead peer (matching the previous
+ * behaviour).
+ *
+ * BIO_do_connect_retry() performs its retry loop with the socket in
+ * non-blocking mode and leaves that mode in place on success. SSL_connect()
+ * on a non-blocking socket returns WANT_READ/EAGAIN immediately, which
+ * surfaces as a bogus "TLS handshake failed: error:00000000:lib(0)::reason(0)"
+ * (empty OpenSSL error queue). The blocking mode is therefore restored here
+ * before the socket is handed to the SSL layer.
+ *
+ * @param bio the connect BIO whose underlying socket gets the timeout
+ */
+void applySocketTimeouts(BIO *bio) {
+  int fd = -1;
+  if (BIO_get_fd(bio, &fd) < 0 || fd < 0)
+    return;
+
+#ifdef _WIN32
+  // Windows sockets are synchronous by default; the retry helper does not
+  // flip them into a non-blocking mode.
+  SocketTimeout_t tv;
+  tv = static_cast<DWORD>(kTimeoutSeconds) * 1000;
+#else
+  // Restore blocking mode left over from BIO_do_connect_retry().
+  const int flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0 && (flags & O_NONBLOCK) != 0)
+    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+
+  SocketTimeout_t tv;
+  tv.tv_sec = kTimeoutSeconds;
+  tv.tv_usec = 0;
+#endif
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+}
+
+/**
+ * @brief Builds a diagnostic message for a failed SSL operation.
+ *
+ * ERR_error_string(ERR_get_error(), ...) alone yields the useless
+ * "error:00000000:lib(0)::reason(0)" whenever the OpenSSL error queue is
+ * empty — which is exactly what happens on socket-level failures
+ * (connection reset, timeout, non-blocking EAGAIN). This helper therefore
+ * classifies the failure via SSL_get_error() and adds the OS error
+ * (errno/strerror) when the queue is empty.
+ *
+ * @param ssl  the SSL object of the failed operation
+ * @param ret  the return value of the failed SSL_* call
+ * @param what short description of the operation, e.g. "TLS handshake"
+ * @return     a human-readable error message
+ */
+std::string sslError(SSL *ssl, int ret, const char *what) {
+  const unsigned long opensslErr = ERR_get_error();
+  std::string msg = std::string(what) + " failed: ";
+
+  if (opensslErr != 0)
+    return msg + ERR_error_string(opensslErr, nullptr);
+
+  // Empty OpenSSL error queue: the failure is socket-level. Classify it via
+  // SSL_get_error() and report the OS error.
+  switch (SSL_get_error(ssl, ret)) {
+  case SSL_ERROR_ZERO_RETURN:
+    return msg + "connection closed by peer";
+  case SSL_ERROR_SYSCALL: {
+    const std::string osErr =
+        errno != 0 ? std::string(strerror(errno)) : std::string("no OS error");
+    return msg + "socket-level I/O error (" + osErr + ", errno " +
+           std::to_string(errno) + ")";
+  }
+  case SSL_ERROR_WANT_READ:
+    return msg + "operation did not complete (WANT_READ; timeout?)";
+  case SSL_ERROR_WANT_WRITE:
+    return msg + "operation did not complete (WANT_WRITE; timeout?)";
+  default:
+    return msg + "SSL error " +
+           std::to_string(SSL_get_error(ssl, ret));
+  }
+}
 
 /**
  * @brief Parses the Content-Length header value from an HTTP response.
@@ -89,11 +193,17 @@ static BIO *createSocket(const std::string &address, const std::string port) {
     throw std::runtime_error(std::string("Creating connect BIO failed: ") +
                              ERR_error_string(ERR_get_error(), nullptr));
 
-  if (BIO_do_connect(bio) <= 0) {
+  // BIO_do_connect_retry() retries the connect for up to kTimeoutSeconds
+  // instead of blocking indefinitely on an unreachable peer.
+  if (BIO_do_connect_retry(bio, kTimeoutSeconds, 100) <= 0) {
     std::string err = ERR_error_string(ERR_get_error(), nullptr);
     BIO_free_all(bio);
     throw std::runtime_error(std::string("Connection failed: ") + err);
   }
+
+  // Bound subsequent reads/writes so a stalled gateway cannot hang the
+  // client forever.
+  applySocketTimeouts(bio);
 
   return bio;
 }
@@ -156,9 +266,9 @@ TLSClient::TLSClient(const std::string address, const std::string port)
   // takes ownership of the BIO, so it must not be freed by us afterwards.
   SSL_set_bio(_ssl.get(), conn, conn);
 
-  if (SSL_connect(_ssl.get()) != 1)
-    throw std::runtime_error(std::string("TLS handshake failed: ") +
-                             ERR_error_string(ERR_get_error(), nullptr));
+  const int ret = SSL_connect(_ssl.get());
+  if (ret != 1)
+    throw std::runtime_error(sslError(_ssl.get(), ret, "TLS handshake"));
 }
 
 TLSClient::~TLSClient() {
@@ -173,10 +283,9 @@ TLSClient::~TLSClient() {
  * @throws std::runtime_error if the write fails
  */
 std::uint32_t TLSClient::write(const BinaryContainer_t &data) {
-  auto ret = SSL_write(_ssl.get(), data.data(), data.size());
+  const int ret = SSL_write(_ssl.get(), data.data(), data.size());
   if (ret <= 0)
-    throw std::runtime_error(std::string("Error Writing: ") +
-                             ERR_error_string(ERR_get_error(), nullptr));
+    throw std::runtime_error(sslError(_ssl.get(), ret, "TLS write"));
   return ret;
 }
 
@@ -206,8 +315,7 @@ std::uint32_t TLSClient::read(BinaryContainer_t &data) {
   for (;;) {
     int size = SSL_read(_ssl.get(), buf, sizeof(buf));
     if (size < 0)
-      throw std::runtime_error(std::string("Error reading: ") +
-                               ERR_error_string(ERR_get_error(), nullptr));
+      throw std::runtime_error(sslError(_ssl.get(), size, "TLS read"));
     if (size == 0) break; // clean connection close
 
     data.insert(data.end(), buf, buf + size);
@@ -245,6 +353,61 @@ std::string TLSClient::extractPayload(const BinaryContainer_t &response) {
   }
   auto bodyStart = headerEnd + 4; // skip "\r\n\r\n"
   return std::string(bodyStart, response.end());
+}
+
+/**
+ * @brief Parses the HTTP status code from a raw response.
+ *
+ * Locates the first space in the status line ("HTTP/1.1 200 OK") and parses
+ * the following token as a decimal number. Returns 0 when the response does
+ * not start with a parseable status line, which ensureHttpSuccess() then
+ * rejects.
+ *
+ * @param response the raw HTTP response bytes
+ * @return         the status code, or 0 if the status line cannot be parsed
+ */
+int TLSClient::getHttpStatusCode(const BinaryContainer_t &response) {
+  // The status line ends at the first CRLF.
+  auto lineEnd = std::search(response.begin(), response.end(), kHeaderSep,
+                             kHeaderSep + 2);
+  if (lineEnd == response.end())
+    return 0;
+
+  std::string statusLine(response.begin(), lineEnd);
+  auto sp1 = statusLine.find(' ');
+  if (sp1 == std::string::npos)
+    return 0;
+
+  int status = 0;
+  std::size_t pos = sp1 + 1;
+  while (pos < statusLine.size() &&
+         std::isdigit(static_cast<unsigned char>(statusLine[pos]))) {
+    status = status * 10 + (statusLine[pos] - '0');
+    ++pos;
+  }
+  return status;
+}
+
+/**
+ * @brief Verifies that the response carries a 2xx status code.
+ *
+ * Without this check a gateway error page (4xx/5xx) would be parsed as a
+ * payload and silently yield a wrong result (e.g. a balance of 0). Throws
+ * std::runtime_error for any non-2xx status, including the response body
+ * for context.
+ *
+ * @param response the raw HTTP response bytes
+ * @param context caller identifier included in the error message
+ * @throws std::runtime_error if the status is not 2xx or unparseable
+ */
+void TLSClient::ensureHttpSuccess(const BinaryContainer_t &response,
+                                  const std::string &context) {
+  const int status = getHttpStatusCode(response);
+  if (status < 200 || status > 299)
+    throw std::runtime_error(
+        context + ": HTTP request failed (status " +
+        (status == 0 ? std::string("unparseable") : std::to_string(status)) +
+        "): " + extractPayload(response));
 }
 
 } // namespace transport
