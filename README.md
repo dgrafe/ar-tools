@@ -30,16 +30,24 @@ ar-tools/
 ├── README.md
 ├── ar-wallet/
 │   └── main.cpp                # ar-wallet CLI utility
+├── ar-drive/
+│   └── main.cpp                # ar-drive CLI utility (ArFS drives)
 ├── libartools/
 │   ├── inc/                    # Public headers
 │   │   ├── crypto/
+│   │   │   ├── aesgcm.h        # AES-256-GCM encryption/decryption
 │   │   │   ├── base64.h        # Base64 encoding
 │   │   │   ├── base64url.h     # Base64url encoding (RFC 7515)
 │   │   │   ├── bip39.h         # BIP-39 mnemonics + deterministic RSA derivation
+│   │   │   ├── deep_hash.h     # Arweave deepHash (SHA-384 merkle root)
+│   │   │   ├── hkdf.h          # HKDF-SHA256 key derivation (RFC 5869)
 │   │   │   ├── jwk.h           # JWK import/export
 │   │   │   ├── pem.h           # PEM import/export, RSA-PSS signing/verification
 │   │   │   ├── sha256.h        # SHA-256 hashing
 │   │   │   └── sha384.h        # SHA-384 hashing
+│   │   ├── arfs/
+│   │   │   ├── ANS104.h        # ANS-104 DataItem format (Avro tags, signature data)
+│   │   │   └── Drives.h        # ArFS drive listing + private drive decryption
 │   │   ├── protocol/
 │   │   │   ├── GetBalance.h      # Balance query via the Arweave gateway
 │   │   │   ├── GetPrice.h        # Transaction price (fee) query
@@ -55,6 +63,7 @@ ar-tools/
     ├── BASE64_tests.cpp
     ├── BASE64url_tests.cpp
     ├── BIP39_tests.cpp
+    ├── Crypto_tests.cpp
     ├── PEM_tests.cpp
     ├── Protocol_tests.cpp
     ├── SHA256_tests.cpp
@@ -93,7 +102,8 @@ cd build && ctest --output-on-failure
 
 The build artifacts are placed in `build/`:
 - `build/libartools.so` – the library
-- `build/ar-wallet` – the CLI utility
+- `build/ar-wallet` – the wallet CLI utility
+- `build/ar-drive` – the ArFS drives CLI utility
 - `build/tests/ar-test` – the test binary
 
 ## User Documentation: `ar-wallet`
@@ -238,6 +248,98 @@ ar-wallet send --target <address> --quantity <amount> [--unit <unit>]
 > **Note**: `send` makes live network requests and submits a real transaction.
 > It requires the wallet to hold sufficient balance to cover the amount plus
 > the transaction fee.
+
+### ArFS Drives (`arfs::Drives`)
+
+The `arfs::Drives` helper lists the ArFS drives owned by a wallet. It queries
+the Arweave GraphQL endpoint for transactions tagged `Entity-Type=drive`,
+groups them by `Drive-Id` (keeping only the newest transaction per drive, so
+renames are handled) and fetches the drive name from the metadata JSON.
+
+```cpp
+// List public drives (no wallet needed).
+artools::arfs::Drives drives;
+auto list = drives.listDrives("WALLET_ADDRESS");
+
+// List drives including private ones (wallet + password).
+artools::crypto::PEM wallet("wallet.pem");
+artools::arfs::Drives drivesWithWallet(wallet);
+auto list2 = drivesWithWallet.listDrives("WALLET_ADDRESS", "drive-password");
+```
+
+Private drives encrypt their metadata with **AES-256-GCM**. The drive key is
+derived per the ArFS specification:
+
+1. The wallet signs the signing key `"drive" || driveIdBytes` (the drive UUID
+   parsed into its 16 raw bytes) with its private key. The signature scheme
+   depends on the drive's `Signature-Type` tag:
+   - **v1** (type `1` or absent): SHA-256 hash then **unsalted RSA-PSS**
+     (`PEM::signRaw`).
+   - **v2** (type `2`): the **ANS-104 DataItem** deepHash of the signing key
+     (arbundles `getSignatureData`), signed with unsalted RSA-PSS.
+2. **HKDF-SHA256** derives a 256-bit drive key from the signature (input key
+   material), an empty salt and the drive password as the info.
+3. The metadata is decrypted with **AES-256-GCM** using the drive key and the
+   `Cipher-IV` tag.
+
+The generic primitives are exposed as reusable classes:
+
+- `crypto::DeepHash` — the Arweave deepHash algorithm (SHA-384 merkle root
+  over nested blobs/lists), used for transaction and DataItem signing.
+- `arfs::ANS104` — the ANS-104 DataItem format: Avro tag serialization
+  (`encodeTags`) and the signature-data deepHash (`getSignatureData`).
+- `crypto::HKDF` — HKDF-SHA256 key derivation (RFC 5869).
+- `crypto::AESGCM` — AES-256-GCM authenticated decryption.
+
+## User Documentation: `ar-drive`
+
+`ar-drive` is a command-line utility for listing the ArFS drives owned by a
+wallet. It shares the wallet-loading options with `ar-wallet`.
+
+### Invocation
+
+```
+ar-drive <command> [global options]
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `list-drives [--password <pw>]` | Lists the ArFS drives of the wallet |
+| `help` | Shows the help |
+| `version` | Shows the version |
+
+### Global Options (Wallet Source)
+
+| Option | Description |
+|---|---|
+| `--mnemonic ["<phrase>"]` | Loads the wallet from a BIP-39 phrase; without a phrase, prompts interactively |
+| `--jwk <path>` | Loads the wallet from a JWK file |
+| `--pem <path>` | Loads the wallet from a PEM file (overrides the default) |
+| `--gateway <host[:port]>` | Custom Arweave gateway (default: `arweave.net:443`) |
+
+If **no** source is given, the default wallet at `~/.ar-tools/wallet.pem` is
+used.
+
+### Examples
+
+```bash
+# List the drives of the default wallet
+ar-drive list-drives
+
+# List drives including private ones (with password)
+ar-drive list-drives --password "drive-password"
+
+# List drives of a wallet from a JWK file
+ar-drive list-drives --jwk wallet.json
+
+# List drives via a custom gateway
+ar-drive list-drives --gateway arweave.net:443
+```
+
+Private drives are decrypted when a password is given; without it their names
+are shown as `(unnamed)`.
 
 ### Security Notes
 

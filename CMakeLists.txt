@@ -42,7 +42,12 @@ set(ARTOOLS_SOURCES
     libartools/src/crypto/pem.cpp
     libartools/src/crypto/sha256.cpp
     libartools/src/crypto/sha384.cpp
+    libartools/src/crypto/hkdf.cpp
+    libartools/src/crypto/aesgcm.cpp
+    libartools/src/crypto/deep_hash.cpp
     libartools/src/transport/TLSClient.cpp
+    libartools/src/arfs/ANS104.cpp
+    libartools/src/arfs/Drives.cpp
     libartools/src/protocol/GetBalance.cpp
     libartools/src/protocol/GetTurboBalance.cpp
     libartools/src/protocol/GetTxAnchor.cpp
@@ -70,13 +75,16 @@ target_link_libraries(artools
 add_executable(ar-wallet ar-wallet/main.cpp)
 target_link_libraries(ar-wallet PRIVATE artools)
 
+add_executable(ar-drive ar-drive/main.cpp)
+target_link_libraries(ar-drive PRIVATE artools)
+
 # --- Tests -------------------------------------------------------------------
 enable_testing()
 add_subdirectory(tests)
 
 # --- Install -----------------------------------------------------------------
 include(GNUInstallDirs)
-install(TARGETS artools ar-wallet
+install(TARGETS artools ar-wallet ar-drive
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

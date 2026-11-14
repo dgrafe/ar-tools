@@ -74,6 +74,21 @@ public:
   bool sign(const BinaryContainer_t &msg, std::string &sig) const;
   bool verify(const BinaryContainer_t &msg, const std::string &sig) const;
 
+  /**
+   * @brief Signs a message directly with RSA-PSS and SHA-256.
+   *
+   * Unlike sign(), this does NOT hash the message first. The message is
+   * passed directly to EVP_PKEY_sign, which computes the SHA-256 digest
+   * internally. This matches the ArFS drive-key derivation, where the
+   * Drive-Id is signed without a preceding hash.
+   *
+   * @param msg the message bytes to sign
+   * @param sig output parameter receiving the base64url-encoded signature
+   * @return    true on success
+   * @throws std::runtime_error on any OpenSSL signing failure
+   */
+  bool signRaw(const BinaryContainer_t &msg, std::string &sig) const;
+
 private:
   void generateKeyPair();
   void buildKeyFromRSAKey(const RSAKey_t &rsaKey);

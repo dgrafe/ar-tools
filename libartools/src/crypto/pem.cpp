@@ -523,6 +523,60 @@ bool PEM::sign(const BinaryContainer_t &msg, std::string &sig) const {
 }
 
 /**
+ * @brief Signs a message with RSA-PSS and SHA-256 using an unsalted PSS.
+ *
+ * Hashes the message with SHA-256, then signs the digest using the private
+ * key with RSA-PKCS1-PSS padding, SHA-256 as the signature digest and a salt
+ * length of 0. This matches the ArFS drive-key derivation, where the signing
+ * key is hashed with SHA-256 and signed with unsalted RSA-PSS
+ * (createSign('sha256').update(data).sign({ saltLength: 0 })).
+ *
+ * @param msg the message bytes to sign
+ * @param sig output parameter receiving the base64url-encoded signature
+ * @return    true on success
+ * @throws std::runtime_error on any OpenSSL signing failure
+ */
+bool PEM::signRaw(const BinaryContainer_t &msg, std::string &sig) const {
+
+  auto md = artools::crypto::SHA256(msg.data(), msg.size()).getHash();
+
+  auto ctx = PrivateKeyContext_t(EVP_PKEY_CTX_new(_pkey.get(), nullptr),
+                                 EVP_PKEY_CTX_free);
+  if (EVP_PKEY_sign_init(ctx.get()) <= 0)
+    throw std::runtime_error(std::string("EVP_PKEY_sign_init: ") +
+                             ERR_error_string(ERR_get_error(), nullptr));
+  if (EVP_PKEY_CTX_set_rsa_padding(ctx.get(), RSA_PKCS1_PSS_PADDING) <= 0)
+    throw std::runtime_error(std::string("EVP_PKEY_CTX_set_rsa_padding: ") +
+                             ERR_error_string(ERR_get_error(), nullptr));
+  if (EVP_PKEY_CTX_set_signature_md(ctx.get(), EVP_sha256()) <= 0)
+    throw std::runtime_error(
+        std::string("EVP_PKEY_CTX_set_signature_md: ") +
+        ERR_error_string(ERR_get_error(), nullptr));
+  // Unsalted RSA-PSS (salt length 0), as required by the ArFS key derivation.
+  if (EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx.get(), 0) <= 0)
+    throw std::runtime_error(
+        std::string("EVP_PKEY_CTX_set_rsa_pss_saltlen: ") +
+        ERR_error_string(ERR_get_error(), nullptr));
+
+  size_t outlen = 0;
+  if (EVP_PKEY_sign(ctx.get(), nullptr, &outlen, md.data(), md.size()) <= 0)
+    throw std::runtime_error(std::string("EVP_PKEY_sign: ") +
+                             ERR_error_string(ERR_get_error(), nullptr));
+
+  BinaryContainer_t _sig;
+  _sig.resize(outlen);
+
+  if (EVP_PKEY_sign(ctx.get(), _sig.data(), &outlen, md.data(), md.size()) <=
+      0)
+    throw std::runtime_error(std::string("EVP_PKEY_sign: ") +
+                             ERR_error_string(ERR_get_error(), nullptr));
+
+  BASE64url::encode(BASE64url::CodingDataType(_sig.begin(), _sig.end()), sig);
+
+  return true;
+}
+
+/**
  * @brief Verifies an RSA-PSS signature over a message.
  *
  * Hashes the message with SHA-256 and verifies the supplied base64url-encoded

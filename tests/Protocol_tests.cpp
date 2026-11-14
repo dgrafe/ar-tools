@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <arfs/Drives.h>
 #include <protocol/GetBalance.h>
 #include <protocol/GetPrice.h>
 #include <protocol/GetTurboBalance.h>
@@ -72,4 +73,77 @@ TEST(Protocol_tests, GetTxAnchor_parseAnchor) {
   // Empty payload must throw.
   EXPECT_THROW(artools::protocol::GetTxAnchor::parseAnchor(""),
                std::runtime_error);
+}
+
+// ArFS drive helper tests (no network access).
+
+TEST(Protocol_tests, Drives_buildQuery) {
+  std::string q = artools::arfs::Drives::buildQuery("abc123");
+  EXPECT_NE(q.find("abc123"), std::string::npos);
+  EXPECT_NE(q.find("Entity-Type"), std::string::npos);
+  EXPECT_NE(q.find("drive"), std::string::npos);
+  // No cursor for the first page.
+  EXPECT_EQ(q.find("after"), std::string::npos);
+
+  std::string q2 = artools::arfs::Drives::buildQuery("abc123", "cursorXYZ");
+  EXPECT_NE(q2.find("cursorXYZ"), std::string::npos);
+}
+
+TEST(Protocol_tests, Drives_parseDrives) {
+  const std::string payload = R"({
+    "data": {
+      "transactions": {
+        "edges": [
+          {
+            "node": {
+              "id": "tx1",
+              "block": { "timestamp": 1000, "height": 10 },
+              "tags": [
+                { "name": "Entity-Type", "value": "drive" },
+                { "name": "Drive-Id", "value": "drive-1" },
+                { "name": "Drive-Privacy", "value": "public" }
+              ]
+            }
+          },
+          {
+            "node": {
+              "id": "tx2",
+              "block": { "timestamp": 2000, "height": 20 },
+              "tags": [
+                { "name": "Drive-Id", "value": "drive-2" },
+                { "name": "Drive-Privacy", "value": "private" }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  })";
+
+  auto drives = artools::arfs::Drives::parseDrives(payload);
+  ASSERT_EQ(drives.size(), 2u);
+  EXPECT_EQ(drives[0].txId, "tx1");
+  EXPECT_EQ(drives[0].driveId, "drive-1");
+  EXPECT_EQ(drives[0].privacy, "public");
+  EXPECT_EQ(drives[0].timestamp, 1000u);
+  EXPECT_EQ(drives[1].txId, "tx2");
+  EXPECT_EQ(drives[1].driveId, "drive-2");
+  EXPECT_EQ(drives[1].privacy, "private");
+
+  // Invalid payload must throw.
+  EXPECT_THROW(artools::arfs::Drives::parseDrives("not json"),
+               std::runtime_error);
+}
+
+TEST(Protocol_tests, Drives_deduplicateByDriveId) {
+  artools::arfs::Drive old1{"tx-old", "drive-1", "public", "", 1000};
+  artools::arfs::Drive new1{"tx-new", "drive-1", "public", "", 2000};
+  artools::arfs::Drive other{"tx-other", "drive-2", "private", "", 1500};
+
+  auto dedup = artools::arfs::Drives::deduplicateByDriveId({old1, new1, other});
+  ASSERT_EQ(dedup.size(), 2u);
+  // Newest first.
+  EXPECT_EQ(dedup[0].txId, "tx-new");
+  EXPECT_EQ(dedup[0].driveId, "drive-1");
+  EXPECT_EQ(dedup[1].txId, "tx-other");
 }
