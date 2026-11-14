@@ -22,6 +22,7 @@
 #include <protocol/GetPrice.h>
 #include <protocol/GetTurboBalance.h>
 #include <protocol/GetTxAnchor.h>
+#include <protocol/TopUpTurbo.h>
 
 // Unit tests for the protocol classes' parsing helpers. These test the
 // parsing and path-building logic without any network access.
@@ -73,6 +74,25 @@ TEST(Protocol_tests, GetTxAnchor_parseAnchor) {
   // Empty payload must throw.
   EXPECT_THROW(artools::protocol::GetTxAnchor::parseAnchor(""),
                std::runtime_error);
+}
+
+TEST(Protocol_tests, TopUpTurbo_buildClaimBody) {
+  std::string body =
+      artools::protocol::TopUpTurbo::buildClaimBody("tx123");
+  EXPECT_NE(body.find("tx_id"), std::string::npos);
+  EXPECT_NE(body.find("tx123"), std::string::npos);
+}
+
+TEST(Protocol_tests, TopUpTurbo_parseMessage) {
+  EXPECT_EQ(artools::protocol::TopUpTurbo::parseMessage(
+                R"({"message":"Transaction credited"})"),
+            "Transaction credited");
+  EXPECT_EQ(artools::protocol::TopUpTurbo::parseMessage(
+                R"({"message":"Transaction pending"})"),
+            "Transaction pending");
+  // Missing field returns empty.
+  EXPECT_EQ(artools::protocol::TopUpTurbo::parseMessage(R"({})"), "");
+  EXPECT_EQ(artools::protocol::TopUpTurbo::parseMessage("not json"), "");
 }
 
 // ArFS drive helper tests (no network access).

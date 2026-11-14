@@ -32,6 +32,7 @@
 #include <protocol/GetPrice.h>
 #include <protocol/GetTurboBalance.h>
 #include <protocol/GetTxAnchor.h>
+#include <protocol/TopUpTurbo.h>
 #include <protocol/Transaction.h>
 #include <wallet.h>
 
@@ -63,6 +64,7 @@ void printUsage(const char *prog) {
             << "  balance         print the wallet balance (AR + Turbo)\n"
             << "  address         print the wallet address\n"
             << "  send            send AR tokens to another wallet\n"
+            << "  top-up-turbo    top up ArDrive Turbo credits with AR\n"
             << "  create-pem      create a new wallet and save it as PEM "
                "(--out <path>)\n"
             << "  create-jwk      create a new wallet and save it as JWK "
@@ -107,6 +109,13 @@ void printCommandUsage(const char *prog, const std::string &command) {
                  "options]\n"
               << "Sends AR tokens to another wallet address.\n"
               << "  --target <address>  recipient wallet address\n"
+              << "  --quantity <amount> amount to send in AR (e.g. 1.5)\n"
+              << "  --unit <unit>       optional unit: AR (default) or "
+                 "winston\n";
+  } else if (command == "top-up-turbo") {
+    std::cerr << "Usage: " << prog
+              << " top-up-turbo --quantity <amount> [global options]\n"
+              << "Tops up the ArDrive Turbo (winc) credit balance with AR.\n"
               << "  --quantity <amount> amount to send in AR (e.g. 1.5)\n"
               << "  --unit <unit>       optional unit: AR (default) or "
                  "winston\n";
@@ -430,6 +439,85 @@ int cmdSend(const artools::wallet::WalletInstance_t &wallet, char **argv,
 }
 
 /**
+ * @brief Tops up the ArDrive Turbo (winc) credit balance with AR.
+ *
+ * Parses --quantity and --unit (like send), then uses the TopUpTurbo helper
+ * to send the amount to the Turbo payment service's Arweave address and claim
+ * the resulting credits.
+ *
+ * @param wallet  the paying wallet
+ * @param argv    the argument vector
+ * @param argc    the number of arguments
+ * @param start   index of the first option
+ * @param gateway optional custom gateway ("host:port"); empty selects the
+ *                default arweave.net:443
+ * @return        0 on success, non-zero on failure
+ */
+int cmdTopUpTurbo(const artools::wallet::WalletInstance_t &wallet, char **argv,
+                  int argc, int start, const std::string &gateway) {
+  std::string quantityStr;
+  std::string unit = "AR";
+  std::string host, port;
+
+  for (int i = start; i < argc; ++i) {
+    std::string opt = argv[i];
+    if (opt == "--quantity") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--quantity requires an amount");
+      quantityStr = argv[++i];
+    } else if (opt == "--unit") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--unit requires a value");
+      unit = argv[++i];
+    } else if (opt == "--gateway") {
+      if (i + 1 >= argc)
+        throw std::runtime_error("--gateway requires a value");
+      parseGateway(argv[++i], host, port);
+    } else if (opt == "--mnemonic" || opt == "--jwk" || opt == "--pem") {
+      // Global wallet-source options; skip them and their value here. They
+      // are handled by loadWallet.
+      if (opt == "--mnemonic") {
+        // --mnemonic may be given without a value (interactive prompt).
+        if (i + 1 < argc && argv[i + 1][0] != '-')
+          ++i;
+      } else {
+        if (i + 1 >= argc)
+          throw std::runtime_error(opt + " requires a file path");
+        ++i;
+      }
+    } else {
+      throw std::runtime_error("unknown option '" + opt + "'");
+    }
+  }
+
+  if (quantityStr.empty())
+    throw std::runtime_error("--quantity is required");
+
+  // Convert the amount to Winston.
+  std::uint64_t quantityWinston = 0;
+  if (unit == "winston") {
+    quantityWinston = std::stoull(quantityStr);
+  } else if (unit == "AR") {
+    double ar = std::stod(quantityStr);
+    if (ar < 0)
+      throw std::runtime_error("--quantity must not be negative");
+    quantityWinston = static_cast<std::uint64_t>(
+        ar * static_cast<double>(artools::protocol::Transaction::kWinstonPerAR));
+  } else {
+    throw std::runtime_error("--unit must be 'AR' or 'winston'");
+  }
+
+  // Top up the Turbo balance: send AR to the Turbo address and claim the
+  // credits.
+  artools::protocol::TopUpTurbo topUp(*wallet, quantityWinston);
+  std::cout << "sent " << quantityWinston << " winston to "
+            << artools::protocol::TopUpTurbo::kTurboAddress << std::endl;
+  std::cout << "transaction id: " << topUp.getTransactionId() << std::endl;
+  std::cout << "claim: " << topUp.getMessage() << std::endl;
+  return 0;
+}
+
+/**
  * @brief Parses --out <path> and --force from the argument list.
  *
  * @param argv the argument vector
@@ -638,7 +726,8 @@ int main(int argc, char **argv) {
     if (command == "jwk-to-pem")
       return cmdJwkToPem(argv, argc, 2);
 
-    if (command != "balance" && command != "address" && command != "send") {
+    if (command != "balance" && command != "address" && command != "send" &&
+        command != "top-up-turbo") {
       std::cerr << "Error: unknown command '" << command << "'\n";
       printUsage(argv[0]);
       return 1;
@@ -662,6 +751,8 @@ int main(int argc, char **argv) {
       return cmdBalance(wallet, gateway);
     if (command == "send")
       return cmdSend(wallet, argv, argc, 2, gateway);
+    if (command == "top-up-turbo")
+      return cmdTopUpTurbo(wallet, argv, argc, 2, gateway);
     return cmdAddress(wallet);
 
   } catch (const std::exception &e) {

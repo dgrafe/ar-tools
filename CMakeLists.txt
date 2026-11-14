@@ -52,6 +52,7 @@ set(ARTOOLS_SOURCES
     libartools/src/protocol/GetTurboBalance.cpp
     libartools/src/protocol/GetTxAnchor.cpp
     libartools/src/protocol/GetPrice.cpp
+    libartools/src/protocol/TopUpTurbo.cpp
     libartools/src/protocol/Transaction.cpp)
 
 add_library(artools SHARED ${ARTOOLS_SOURCES})

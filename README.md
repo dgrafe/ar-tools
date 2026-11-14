@@ -53,6 +53,7 @@ ar-tools/
 │   │   │   ├── GetPrice.h        # Transaction price (fee) query
 │   │   │   ├── GetTurboBalance.h # ArDrive Turbo (winc) balance query
 │   │   │   ├── GetTxAnchor.h     # Transaction anchor query
+│   │   │   ├── TopUpTurbo.h      # Top up Turbo credits with AR
 │   │   │   └── Transaction.h     # Signed v2 token-transfer transaction
 │   │   ├── transport/
 │   │   │   └── TLSClient.h     # TLS client (OpenSSL)
@@ -123,6 +124,7 @@ ar-wallet <command> [global options]
 | `balance` | Prints the wallet balance in AR and ArDrive Turbo credits |
 | `address` | Prints the wallet address |
 | `send --target <addr> --quantity <amt> [--unit <unit>]` | Sends AR tokens to another wallet |
+| `top-up-turbo --quantity <amt> [--unit <unit>]` | Tops up ArDrive Turbo credits with AR |
 | `create-pem --out <path> [--force]` | Creates a new wallet and saves it as PEM |
 | `create-jwk --out <path> [--force]` | Creates a new wallet and saves it as JWK |
 | `create-mnemonic` | Creates a new wallet and prints mnemonic + address |
@@ -181,6 +183,12 @@ ar-wallet send --target <address> --quantity 0.5 --pem wallet.pem
 
 # Send AR via a custom gateway
 ar-wallet send --target <address> --quantity 0.5 --gateway arweave.net:443
+
+# Top up 1 AR of ArDrive Turbo credits (default wallet)
+ar-wallet top-up-turbo --quantity 1.1
+
+# Top up 500000000000 Winston of Turbo credits
+ar-wallet top-up-turbo --quantity 500000000000 --unit winston
 
 # Load a wallet from a mnemonic (interactive input)
 ar-wallet address --mnemonic
@@ -248,6 +256,52 @@ ar-wallet send --target <address> --quantity <amount> [--unit <unit>]
 > **Note**: `send` makes live network requests and submits a real transaction.
 > It requires the wallet to hold sufficient balance to cover the amount plus
 > the transaction fee.
+
+### Topping up Turbo credits (`top-up-turbo`)
+
+The `top-up-turbo` command tops up the ArDrive Turbo (winc) credit balance
+with AR. It sends the given amount to the Turbo payment service's Arweave
+address and claims the resulting credits (see `protocol::TopUpTurbo` below).
+
+```
+ar-wallet top-up-turbo --quantity <amount> [--unit <unit>]
+```
+
+| Option | Description |
+|---|---|
+| `--quantity <amount>` | Amount to top up (required) |
+| `--unit <unit>` | `AR` (default) or `winston` |
+| `--gateway <host[:port]>` | Custom Arweave gateway (default: `arweave.net:443`) |
+
+> **Note**: `top-up-turbo` makes live network requests, submits a real
+> transaction and claims the credits. It requires the wallet to hold
+> sufficient balance to cover the amount plus the transaction fee.
+
+### Topping up Turbo credits (`protocol::TopUpTurbo`)
+
+The `protocol::TopUpTurbo` helper tops up the ArDrive Turbo (winc) credit
+balance with AR. It performs the following steps automatically:
+
+1. Fetches the current transaction anchor (`GET /tx_anchor`) and fee
+   (`GET /price/0/<turbo-address>`) from the Arweave gateway.
+2. Builds and submits a signed **v2** token-transfer transaction of the given
+   quantity (in Winston) to the Turbo payment service's Arweave address
+   (`JNC6vBhjHY1EPwV3pEeNmrsgFMxH5d38_LHsZ7jful8`).
+3. Remembers the transaction id.
+4. Claims the credits by posting the transaction id to the Turbo payment
+   service (`POST /v1/account/balance/arweave` with `{"tx_id": "<id>"}`),
+   which reads the transaction from the chain, verifies it pays the service,
+   prices it and credits the sender's Turbo account.
+
+```cpp
+artools::wallet::WalletInstance_t wallet = /* ... */;
+artools::protocol::TopUpTurbo topUp(*wallet, 1000000000000ULL); // 1 AR
+std::cout << "transaction id: " << topUp.getTransactionId() << std::endl;
+std::cout << "claim: " << topUp.getMessage() << std::endl;
+```
+
+The claim is accepted when the service returns HTTP 200 ("Transaction
+credited") or 202 ("Transaction pending").
 
 ### ArFS Drives (`arfs::Drives`)
 
